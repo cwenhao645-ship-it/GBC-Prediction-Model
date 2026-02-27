@@ -105,4 +105,18 @@ if st.button("🚀 Start Prediction (开始预测)", type="primary"):
         # 绘制瀑布图 (传入单个患者的 SHAP 值)
         shap.plots.waterfall(shap_values[0], max_display=10, show=False)
         
-        #
+        # 调整排版并展示到网页上
+        plt.tight_layout()
+        st.pyplot(fig)
+        
+        # 清理内存
+        plt.clf() 
+        
+    except Exception as e:
+        st.warning(f"⚠️ SHAP 图表生成失败，错误信息: {e}")
+
+# ==========================================
+# 7. 页脚免责声明
+# ==========================================
+st.markdown("---")
+st.caption("© 2026 GBC Prediction Model. For Research Use Only. 本系统结果仅供学术参考，不可替代临床医生的专业诊断。")
