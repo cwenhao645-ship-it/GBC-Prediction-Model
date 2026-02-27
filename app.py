@@ -1,121 +1,108 @@
 import streamlit as st
-import joblib
 import pandas as pd
-import numpy as np
+import joblib
+import shap
+import matplotlib.pyplot as plt
 
 # ==========================================
-# 1. 网页基础设置
+# 1. 页面基本设置与标题
 # ==========================================
-st.set_page_config(
-    page_title="GBC Survival Predictor",
-    layout="centered",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="GBC 远处转移风险预测", layout="wide", page_icon="🏥")
 
-# 标题和简介
-st.title("🏥 胆囊癌远处转移风险预测系统")
+st.markdown("## 🏥 胆囊癌远处转移风险预测系统")
 st.markdown("### Prediction System for Gallbladder Cancer Distant Metastasis")
-st.markdown("Based on XGBoost Machine Learning Model")
-st.info("💡 请在左侧侧边栏输入患者的临床参数，点击按钮获取预测结果。")
-st.markdown("---")
+st.caption("Based on XGBoost Machine Learning Model")
 
+st.info("💡 请在左侧侧边栏输入患者的临床参数，点击按钮获取预测结果。")
 
 # ==========================================
-# 2. 加载模型 (读取您刚才保存的 .pkl)
+# 2. 加载模型
 # ==========================================
 @st.cache_resource
 def load_model():
+    return joblib.load('xgboost_model.pkl')
+
+try:
+    model = load_model()
+except Exception as e:
+    st.error(f"❌ 模型加载失败: {e}")
+    st.warning("请先上传模型文件 xgboost_model.pkl 到当前目录！")
+    st.stop()
+
+# ==========================================
+# 3. 侧边栏：患者信息输入
+# ==========================================
+st.sidebar.markdown("### 📋 Patient Information (患者信息)")
+
+age = st.sidebar.slider("Age (年龄)", min_value=18, max_value=100, value=65, step=1)
+sex_display = st.sidebar.selectbox("Sex (性别)", options=["Female (女性)", "Male (男性)"])
+t_stage_display = st.sidebar.selectbox("T Stage (T分期)", options=["T1", "T2", "T3", "T4"])
+lnr = st.sidebar.slider("Lymph Node Ratio (LNR, 淋巴结比率)", min_value=0.0, max_value=1.0, value=0.10, step=0.01)
+
+st.sidebar.caption("LNR = 阳性淋巴结数 / 清扫淋巴结总数")
+
+# 特征格式转换 (与模型训练时保持完全一致)
+sex_code = 1 if "Male" in sex_display else 0
+t_code = int(t_stage_display.replace("T", ""))
+
+# 组合输入数据
+input_features = ['Age_Numeric', 'Sex_Code', 'T_Code', 'LNR']
+input_data = pd.DataFrame([[age, sex_code, t_code, lnr]], columns=input_features)
+
+# ==========================================
+# 4. 主界面：显示当前参数
+# ==========================================
+st.markdown("### 1. User Input Parameters (当前参数)")
+st.dataframe(input_data, use_container_width=True)
+
+# 设置约登指数计算出的最佳阈值
+OPTIMAL_THRESHOLD = 0.546
+
+# ==========================================
+# 5. 预测按钮与结果展示
+# ==========================================
+if st.button("🚀 Start Prediction (开始预测)", type="primary"):
+    
+    # 获取高危类别的预测概率
+    prob = model.predict_proba(input_data)[0][1]
+    
+    st.markdown("### 2. Prediction Result (预测结果)")
+    
+    # 绘制进度条
+    st.progress(float(prob))
+    
+    # 使用列布局美化输出
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric(label="Predicted Probability (转移概率)", value=f"{prob * 100:.2f}%")
+        
+    with col2:
+        if prob >= OPTIMAL_THRESHOLD:
+            st.error("⚠️ **High Risk (高危)**")
+            st.markdown("**建议：** 密切随访，考虑进一步影像学检查及系统性治疗。")
+        else:
+            st.success("✅ **Low Risk (低危)**")
+            st.markdown("**建议：** 常规随访，以局部手术治疗为主。")
+            
+    # ==========================================
+    # 6. SHAP 瀑布图 (个体化预测逻辑)
+    # ==========================================
+    st.markdown("---")
+    st.markdown("### 3. Individualized Prediction Logic (个体化预测逻辑)")
+    st.markdown("下图展示了各临床特征对该患者预测结果的驱动情况：**红色**代表增加远处转移风险，**蓝色**代表降低风险。")
+    
     try:
-        # 这里的名字必须和您上传的文件名完全一致！
-        model = joblib.load('xgboost_model.pkl')
-        return model
-    except Exception as e:
-        st.error(f"❌ 模型加载失败: {e}")
-        return None
-
-
-model = load_model()
-
-# ==========================================
-# 3. 侧边栏：输入患者参数
-# ==========================================
-st.sidebar.header("📋 Patient Information (患者信息)")
-
-
-def user_input_features():
-    # 1. 年龄 (Age)
-    age = st.sidebar.slider("Age (年龄)", 18, 100, 65)
-
-    # 2. 性别 (Sex) -> 需要转换为 0/1
-    sex_display = st.sidebar.selectbox("Sex (性别)", ("Female (女性)", "Male (男性)"))
-    # 逻辑：Male=1, Female=0 (根据您之前的代码逻辑)
-    sex_code = 1 if "Male" in sex_display else 0
-
-    # 3. T分期 (T Stage) -> 需要转换为 1/2/3/4
-    t_display = st.sidebar.selectbox("T Stage (T分期)", ("T1", "T2", "T3", "T4"))
-    t_map = {"T1": 1, "T2": 2, "T3": 3, "T4": 4}
-    t_code = t_map[t_display.split()[0]]
-
-    # 4. 淋巴结比率 (LNR)
-    lnr = st.sidebar.slider("Lymph Node Ratio (LNR, 淋巴结比率)", 0.0, 1.0, 0.1, 0.01)
-    st.sidebar.caption("LNR = 阳性淋巴结数 / 清扫淋巴结总数")
-
-    # 封装成 DataFrame (列名必须和训练时完全一致！)
-    data = {
-        'Age_Numeric': age,
-        'Sex_Code': sex_code,
-        'T_Code': t_code,
-        'LNR': lnr
-    }
-    features = pd.DataFrame(data, index=[0])
-    return features
-
-
-# 获取用户输入
-if model is not None:
-    input_df = user_input_features()
-
-    # ==========================================
-    # 4. 主界面：显示预测结果
-    # ==========================================
-    # 显示用户输入的参数概览
-    st.subheader("1. User Input Parameters (当前参数)")
-    # 美化显示
-    display_df = input_df.copy()
-    display_df['Sex_Code'] = "Male" if display_df['Sex_Code'][0] == 1 else "Female"
-    display_df['T_Code'] = f"T{display_df['T_Code'][0]}"
-    st.table(display_df)
-
-    # 预测按钮
-    if st.button("🚀 Start Prediction (开始预测)", type="primary"):
-        with st.spinner('Calculating...'):
-            # 预测概率
-            prediction_proba = model.predict_proba(input_df)
-            risk_score = prediction_proba[0][1]  # 取出属于类别1(转移)的概率
-
-        st.subheader("2. Prediction Result (预测结果)")
-
-        # 进度条可视化
-        st.progress(float(risk_score))
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric(label="Predicted Probability (转移概率)",
-                      value=f"{risk_score * 100:.2f}%")
-
-        with col2:
-            # 阈值判断 (使用您文章中的最佳阈值 0.546)
-            threshold = 0.546
-            if risk_score > threshold:
-                st.error("⚠️ High Risk (高危)")
-                st.write("**建议：** 密切随访，考虑进一步检查。")
-            else:
-                st.success("✅ Low Risk (低危)")
-                st.write("**建议：** 常规随访。")
-
-else:
-    st.warning("请先上传模型文件 xgboost_model.pkl")
-
-# 页脚声明
-st.markdown("---")
-st.markdown("© 2024 GBC Prediction Model. For Research Use Only.")
+        # 设置英文字体，防止云端 Linux 服务器缺少中文字体导致方块乱码
+        plt.rcParams['font.sans-serif'] = ['Arial', 'Helvetica', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        
+        # 初始化 SHAP 解释器
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer(input_data)
+        
+        # 创建一个指定大小的画布
+        fig, ax = plt.subplots(figsize=(8, 5))
+        # 绘制瀑布图 (传入单个患者的 SHAP 值)
+        shap.plots.waterfall(shap_values[0], max_display=10, show=False)
+        
+        #
