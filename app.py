@@ -6,151 +6,120 @@ import shap
 import matplotlib.pyplot as plt
 
 # ==========================================
-# 1. 网页全局配置 (匹配新叙事逻辑)
+# 1. 页面配置与标题
 # ==========================================
-st.set_page_config(
-    page_title="GBC Occult Metastasis Assessor",
-    page_icon="🩺",
-    layout="wide"
-)
+st.set_page_config(page_title="GBC Post-op SDM Predictor", layout="wide", page_icon="🔬")
 
-# 隐藏 Streamlit 默认的菜单和页脚
-hide_st_style = """
-            <style>
-            #MainMenu {visibility: hidden;}
-            footer {visibility: hidden;}
-            header {visibility: hidden;}
-            </style>
-            """
-st.markdown(hide_st_style, unsafe_allow_html=True)
+st.title("Gallbladder Cancer Post-operative Staging Refinement")
+st.subheader("Identifying Missed Synchronous Distant Metastasis (SDM) via LNR")
 
-# ==========================================
-# 2. 加载模型 (使用缓存机制提升加载速度)
-# ==========================================
-@st.cache_resource
-def load_model():
-    # 请确保 GBC_LNR_XGB_Model.pkl 与 app.py 在同一目录下
-    try:
-        model = joblib.load("GBC_LNR_XGB_Model.pkl")
-        return model
-    except FileNotFoundError:
-        st.error("Error: Model file 'GBC_LNR_XGB_Model.pkl' not found. Please ensure it is in the same directory as app.py.")
-        st.stop()
-
-model = load_model()
-
-# ==========================================
-# 3. 网页主标题与说明
-# ==========================================
-st.title("🩺 Post-operative Occult Metastasis Risk Assessment for Gallbladder Cancer")
 st.markdown("""
-**A Machine Learning Tool Powered by Lymph Node Ratio (LNR)**
-
-This tool is designed to identify the risk of *occult systemic dissemination* using post-operative pathological parameters. 
-By rectifying potential stage migration caused by inadequate lymph node examination, it assists clinicians in determining whether intensive adjuvant interventions (e.g., PET-CT screening, systemic chemotherapy) are required after primary surgery.
+**Clinical Context:** Traditional N-staging often suffers from 'stage migration' due to inadequate lymph node harvest. This tool utilizes the Lymph Node Ratio (LNR) as a 'mathematical buffer' to identify patients who appear localized (M0) during surgery but harbor high risk of **Synchronous Distant Metastasis (SDM)**. 
+*Designed as a "Rule-out" tool to guide post-operative deep imaging (e.g., PET-CT).*
 """)
 st.divider()
 
 # ==========================================
-# 4. 侧边栏：收集患者临床基线数据
+# 2. 加载最新模型 (包含 6 个特征)
 # ==========================================
-st.sidebar.header("📋 Patient Post-operative Parameters")
+@st.cache_resource
+def load_model():
+    # ⚠️ 请确保您的 GitHub 仓库里有这个最新的 pkl 模型文件！
+    return joblib.load("GBC_LNR_XGB_Model_Ultimate.pkl")
 
-# 4.1 年龄
-age = st.sidebar.number_input("Age (Years)", min_value=18, max_value=100, value=65, step=1)
+model = load_model()
 
-# 4.2 性别
-sex = st.sidebar.selectbox("Sex", options=["Female", "Male"])
+# ==========================================
+# 3. 侧边栏：收集 6 个临床输入特征
+# ==========================================
+st.sidebar.header("📝 Post-operative Parameters")
+st.sidebar.markdown("Please input the pathology results:")
 
-# 4.3 病理 T 分期
-t_stage = st.sidebar.selectbox("Pathological T Stage (pT)", options=["T1", "T2", "T3", "T4"])
-
-# 4.4 淋巴结比率 (核心变量)
-st.sidebar.markdown("---")
-st.sidebar.markdown("**Pathological Lymph Node Status**")
-lnr = st.sidebar.slider(
-    "Lymph Node Ratio (LNR)", 
-    min_value=0.0, 
-    max_value=1.0, 
-    value=0.30, 
-    step=0.01,
-    help="LNR = Positive Nodes / Total Examined Nodes from the pathology report."
-)
+age = st.sidebar.number_input("Age at Diagnosis", min_value=18, max_value=100, value=65)
+sex = st.sidebar.selectbox("Sex", ["Female", "Male"])
+t_stage = st.sidebar.selectbox("Pathological T Stage", ["T1", "T2", "T3", "T4"])
+grade = st.sidebar.selectbox("Tumor Grade", ["Grade I (Well differentiated)", "Grade II (Moderately)", "Grade III (Poorly)", "Grade IV (Undifferentiated)"])
+tumor_size = st.sidebar.number_input("Tumor Size (mm)", min_value=1, max_value=200, value=30)
 
 st.sidebar.markdown("---")
-predict_btn = st.sidebar.button("Assess Occult Metastasis Risk 🚀", use_container_width=True)
+nodes_examined = st.sidebar.number_input("Total Lymph Nodes Examined", min_value=1, max_value=100, value=6)
+nodes_positive = st.sidebar.number_input("Positive Lymph Nodes", min_value=0, max_value=100, value=0)
+
+# LNR 计算与防错机制
+if nodes_positive > nodes_examined:
+    st.sidebar.error("Error: Positive nodes cannot exceed examined nodes.")
+    lnr = 0.0
+else:
+    lnr = nodes_positive / nodes_examined
+st.sidebar.info(f"**Calculated LNR: {lnr:.3f}**")
 
 # ==========================================
-# 5. 数据转换逻辑
+# 4. 数据预处理与预测
 # ==========================================
-# 将输入转化为模型需要的数值格式
+# 变量映射 (严格对齐您的 Python 训练代码)
 sex_code = 1 if sex == "Male" else 0
-t_code_map = {"T1": 1, "T2": 2, "T3": 3, "T4": 4}
-t_code = t_code_map[t_stage]
+t_mapping = {"T1": 1, "T2": 2, "T3": 3, "T4": 4}
+grade_mapping = {
+    "Grade I (Well differentiated)": 1, 
+    "Grade II (Moderately)": 2, 
+    "Grade III (Poorly)": 3, 
+    "Grade IV (Undifferentiated)": 4
+}
 
-# 必须与模型训练时的特征名称和顺序严格一致
-feature_names = ['Age_Numeric', 'Sex_Code', 'T_Code', 'LNR']
-input_data = pd.DataFrame([[age, sex_code, t_code, lnr]], columns=feature_names)
+input_df = pd.DataFrame({
+    'Age_Numeric': [age],
+    'Sex_Code': [sex_code],
+    'T_Code': [t_mapping[t_stage]],
+    'Grade_Code': [grade_mapping[grade]],
+    'Tumor_Size_Num': [tumor_size],
+    'LNR': [lnr]
+})
 
-# ==========================================
-# 6. 核心预测与结果展示
-# ==========================================
-# 定义高危阈值 (我们在 Table 4 中确定的最佳阈值)
+# 执行预测 (最佳阈值为 0.546)
+prob = model.predict_proba(input_df)[0, 1]
 OPTIMAL_THRESHOLD = 0.546
 
-if predict_btn:
-    # 模型预测
-    prob = model.predict_proba(input_data)[0][1]
-    
-    col1, col2 = st.columns([1, 1.2])
-    
-    with col1:
-        st.subheader("📊 Risk Stratification Result")
-        
-        # 结果分级判定
-        if prob >= OPTIMAL_THRESHOLD:
-            st.error(f"### Probability of Occult Distant Metastasis: {prob * 100:.1f}%")
-            st.error("🚨 **Risk Level: HIGH RISK (Deep Screening Alert)**")
-            st.warning("""
-            **Clinical Recommendation:** Despite potentially negative intraoperative exploration, the high pathological lymph node burden (LNR) indicates a significant risk of occult systemic dissemination. 
-            **Immediate PET-CT screening and early initiation of intensive adjuvant systemic therapy (e.g., chemotherapy) are strongly recommended.**
-            """)
-        else:
-            st.success(f"### Probability of Occult Distant Metastasis: {prob * 100:.1f}%")
-            st.success("✅ **Risk Level: LOW RISK**")
-            st.info("""
-            **Clinical Recommendation:** The patient has a low probability of occult metastasis (High Negative Predictive Value). Standard post-operative follow-up and regular surveillance are recommended.
-            """)
-            
-    # ==========================================
-    # 7. SHAP 个体化解释瀑布图
-    # ==========================================
-    with col2:
-        st.subheader("🧠 Model Interpretation (SHAP)")
-        st.markdown("The waterfall plot explains how each feature pushes the patient's risk higher (red) or lower (blue) from the baseline risk.")
-        
-        with st.spinner("Generating explanation..."):
-            try:
-                # 初始化 SHAP 解释器
-                explainer = shap.TreeExplainer(model)
-                shap_values = explainer(input_data)
-                
-                # 绘制瀑布图
-                fig = plt.figure(figsize=(8, 5))
-                # 临时调整 matplotlib 设置以适应网页显示
-                plt.rcParams.update({'font.size': 10})
-                shap.plots.waterfall(shap_values[0], max_display=10, show=False)
-                
-                # 在 Streamlit 中显示图表
-                st.pyplot(fig)
-                plt.clf() # 清除画布防止内存泄漏
-            except Exception as e:
-                st.error(f"Error generating SHAP plot: {e}")
+# ==========================================
+# 5. 结果展示与高级临床话术
+# ==========================================
+col1, col2 = st.columns([1, 1])
 
-else:
-    # 初始欢迎界面
-    st.info("👈 Please input the post-operative parameters in the sidebar and click **'Assess Occult Metastasis Risk'** to see the individualized evaluation and SHAP explanation.")
+with col1:
+    st.markdown("### 🎯 Risk Assessment")
+    
+    if prob >= OPTIMAL_THRESHOLD:
+        st.error(f"⚠️ HIGH RISK of Synchronous Distant Metastasis")
+        st.markdown(f"<h1 style='text-align: center; color: #E64B35;'>{prob:.1%}</h1>", unsafe_allow_html=True)
+        st.warning("""
+        **Clinical Recommendation (Rule-out Philosophy):**
+        This patient exhibits a highly aggressive tumor biological profile despite potential initial negative exploration. 
+        👉 **Immediate systemic restaging via PET-CT or high-resolution imaging is strongly advised** before initiating routine adjuvant therapy.
+        """)
+    else:
+        st.success(f"✅ LOW RISK of Synchronous Distant Metastasis")
+        st.markdown(f"<h1 style='text-align: center; color: #00A087;'>{prob:.1%}</h1>", unsafe_allow_html=True)
+        st.info("""
+        **Clinical Recommendation:**
+        The systemic dissemination risk is relatively low. 
+        👉 Routine post-operative follow-up and standard adjuvant treatments according to current guidelines are appropriate. Avoid unnecessary excessive imaging.
+        """)
 
-# 页脚信息
-st.markdown("---")
-st.caption("Disclaimer: This tool is for academic and research purposes only and should not replace professional clinical judgment. The model prioritizes sensitivity to avoid missing high-risk patients.")
+# ==========================================
+# 6. SHAP 瀑布图 (透明化决策)
+# ==========================================
+with col2:
+    st.markdown("### 🧠 AI Decision Explanation (SHAP)")
+    st.markdown("Displays how each variable pushes the risk from the baseline.")
+    
+    # SHAP 解释器
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer(input_df)
+    
+    # 绘制瀑布图
+    fig, ax = plt.subplots(figsize=(6, 4))
+    shap.plots.waterfall(shap_values[0], show=False)
+    plt.tight_layout()
+    st.pyplot(fig)
+
+st.divider()
+st.caption("Disclaimer: This tool is for academic research and adjunctive clinical decision-making only. It does not replace professional medical judgment. (Trained on SEER cohort n=2,830)")
